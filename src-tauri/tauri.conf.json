@@ -29,7 +29,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/Menglavoll/git-view/releases/latest/download/latest.json"
+        "https://github.com/menglavol/git-view/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwNEZFQ0FGRTkyNzA1M0YKUldRL0JTZnByK3hQVUtQaktGRmNmT2sybndKVFZUVVY4Y0pLL0FvN3FNMmswbzlUVHhPV2d5a0MK"
     }

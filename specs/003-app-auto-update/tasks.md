@@ -41,7 +41,7 @@
 **⚠️ CRITICAL**：在完成 T005–T009 并成功发出「第一个带签名的基线 Release」之前，US1/US2/US3 的客户端行为无法端到端验证。
 
 - [ ] T005 [用户执行] 本机运行 `pnpm tauri signer generate -w ~/.gitview-updater.key` 生成 minisign 密钥对；将**私钥内容**与**私钥密码**分别配置为 GitHub 仓库 Secrets `TAURI_SIGNING_PRIVATE_KEY` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`；私钥另行安全备份（丢失将导致存量用户无法验签后续更新）。步骤详见 `specs/003-app-auto-update/quickstart.md`
-- [X] T006 在 `src-tauri/tauri.conf.json` 新增 `plugins.updater` 配置：`endpoints` 指向 `https://github.com/Menglavoll/git-view/releases/latest/download/latest.json`，`pubkey` 填入 T005 生成的**公钥**内容；加注释说明 endpoint 为 GitHub 稳定跳转、无需自建服务器
+- [X] T006 在 `src-tauri/tauri.conf.json` 新增 `plugins.updater` 配置：`endpoints` 指向 `https://github.com/menglavol/git-view/releases/latest/download/latest.json`，`pubkey` 填入 T005 生成的**公钥**内容；加注释说明 endpoint 为 GitHub 稳定跳转、无需自建服务器
 - [X] T007 改造 `.github/workflows/release.yml`：在 `tauri-action` 步骤的 `env` 注入 `TAURI_SIGNING_PRIVATE_KEY` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（引用 T005 的 Secrets），使发版时自动为产物生成 `.sig` 签名并产出 `latest.json`
 - [X] T008 在 `.github/workflows/release.yml` 核对/调整各平台 updater 兼容 bundle：macOS 需产出 `.app.tar.gz`（非仅 `.dmg`）、Windows `.msi`/`.nsis`、Linux `.AppImage`（`.deb` 不支持原地更新）；确认 `tauri.conf.json` 的 `bundle.targets` 与 `createUpdaterArtifacts` 设置能产出上述格式
 - [X] T009 在 `.github/workflows/release.yml` 顶部注释补充「更新签名链路」说明（私钥来源、latest.json 产出、公钥位置），与既有「发布门禁」注释风格一致

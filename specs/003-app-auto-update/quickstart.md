@@ -37,7 +37,7 @@ npm run tauri signer generate -- -w ~/.gitview/updater.key
 "plugins": {
   "updater": {
     "endpoints": [
-      "https://github.com/Menglavoll/git-view/releases/latest/download/latest.json"
+      "https://github.com/menglavol/git-view/releases/latest/download/latest.json"
     ],
     "pubkey": "<~/.gitview/updater.key.pub 文件内容>"
   }

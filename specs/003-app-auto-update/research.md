@@ -36,7 +36,7 @@
 ## 决策 3：更新清单 endpoint —— GitHub 稳定跳转，无需自建服务器
 
 **决策**：endpoint 配置为
-`https://github.com/Menglavoll/git-view/releases/latest/download/latest.json`
+`https://github.com/menglavol/git-view/releases/latest/download/latest.json`
 
 **理由**：
 - GitHub 的 `releases/latest/download/<asset>` 是稳定跳转，始终指向最新正式 Release 的对应资产，无需在发版时更新 endpoint。

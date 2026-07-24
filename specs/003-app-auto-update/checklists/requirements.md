@@ -4,7 +4,7 @@
 
 ## 需求完整性
 
-- [x] 更新来源明确（GitHub Releases `Menglavoll/git-view`）
+- [x] 更新来源明确（GitHub Releases `menglavol/git-view`）
 - [x] 更新方式明确（应用内自动下载安装，用户已确认）
 - [x] UI 落点明确（设置 → 通用 Tab 底部「关于与更新」分区，用户已确认）
 - [x] 覆盖三平台（macOS / Windows / Linux）兼容格式差异
