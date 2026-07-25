@@ -3,7 +3,7 @@
 **Feature Branch**: `003-app-auto-update`
 **Created**: 2026-07-13
 **Status**: Draft（待用户批准 plan 后进入实施）
-**Input**: 用户「在设置中添加检查软件更新功能，更新来源为本项目 GitHub」+ 已确认采用「应用内自动下载安装」路径、UI 落在通用 Tab 底部、检查仓库为 `Menglavoll/git-view`
+**Input**: 用户「在设置中添加检查软件更新功能，更新来源为本项目 GitHub」+ 已确认采用「应用内自动下载安装」路径、UI 落在通用 Tab 底部、检查仓库为 `menglavol/git-view`
 
 ## 概述
 
@@ -42,7 +42,7 @@
 - **FR-007**：安装完成后 MUST 引导用户重启以应用新版本，支持「立即重启 / 稍后」。
 - **FR-008**：检查/下载失败 MUST 不阻断设置页其余功能（失败仅提示策略）。
 - **FR-009**：所有面向用户的文案 MUST 走 i18n（中/英）。
-- **FR-010**：更新来源 MUST 为 `Menglavoll/git-view` 的 GitHub Releases，客户端不得请求用户账号平台或携带用户 Token。
+- **FR-010**：更新来源 MUST 为 `menglavol/git-view` 的 GitHub Releases，客户端不得请求用户账号平台或携带用户 Token。
 - **FR-011**：发布流程 MUST 在发版时为各平台安装包生成签名并产出更新清单（`latest.json`），使客户端可检测到新版本。
 
 ## 非功能需求

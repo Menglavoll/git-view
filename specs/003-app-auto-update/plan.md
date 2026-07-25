@@ -6,7 +6,7 @@
 
 ## Summary
 
-在设置中心「通用」Tab 底部新增「关于与更新」分区，接入 Tauri 官方 `tauri-plugin-updater` 实现**应用内检查 → 下载 → 验签 → 安装 → 重启**的自动更新闭环。更新的权威来源为本项目 GitHub Releases（`Menglavoll/git-view`），CI 发版时由 `tauri-action` 自动为各平台安装包生成 minisign 签名并产出 `latest.json` 更新清单；客户端从 `releases/latest/download/latest.json` 拉取清单、用内置公钥验签后安装。
+在设置中心「通用」Tab 底部新增「关于与更新」分区，接入 Tauri 官方 `tauri-plugin-updater` 实现**应用内检查 → 下载 → 验签 → 安装 → 重启**的自动更新闭环。更新的权威来源为本项目 GitHub Releases（`menglavol/git-view`），CI 发版时由 `tauri-action` 自动为各平台安装包生成 minisign 签名并产出 `latest.json` 更新清单；客户端从 `releases/latest/download/latest.json` 拉取清单、用内置公钥验签后安装。
 
 本特性由两部分组成，需按顺序落地：
 
@@ -127,7 +127,7 @@ src/
 
 - **为何用 `tauri-plugin-updater` 而非自建「检查+跳转」**：用户已明确要「应用内自动下载安装」，官方 updater 是唯一成熟的原地更新方案，自带下载进度、验签、跨平台安装。
 - **两种签名辨析**：updater 要求的是 **minisign 更新包签名**（`tauri signer generate` 免费生成），与 **OS 代码签名/公证**（付费证书）是两回事。缺后者只影响首次运行系统警告，**不阻断** updater 工作。
-- **endpoint 选择**：用 GitHub 稳定跳转 `https://github.com/Menglavoll/git-view/releases/latest/download/latest.json`，无需自建服务器；`latest.json` 由 `tauri-action` 在发版时自动生成上传。
+- **endpoint 选择**：用 GitHub 稳定跳转 `https://github.com/menglavol/git-view/releases/latest/download/latest.json`，无需自建服务器；`latest.json` 由 `tauri-action` 在发版时自动生成上传。
 - **版本判定**：由 updater 自身用 `tauri.conf.json` 的 `version` 与 `latest.json` 的 `version` 比对，客户端无需自写语义化比较。
 - **代理**：updater 请求走系统网络栈；若需支持用户在设置里配的代理，Phase 1 评估 updater 的 `Builder` 是否暴露 proxy 配置，不支持则文档注明「更新检查走直连/系统代理」。
 

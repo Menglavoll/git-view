@@ -17,7 +17,7 @@
     // key 为 "{target}-{arch}"，值含下载地址与该包的 minisign 签名
     "darwin-aarch64": {
       "signature": "<minisign 签名内容>",
-      "url": "https://github.com/Menglavoll/git-view/releases/download/v0.2.0/GitView_aarch64.app.tar.gz"
+      "url": "https://github.com/menglavol/git-view/releases/download/v0.2.0/GitView_aarch64.app.tar.gz"
     },
     "darwin-x86_64":   { "signature": "...", "url": "..." },
     "windows-x86_64":  { "signature": "...", "url": "...GitView_x64-setup.nsis.zip" },
