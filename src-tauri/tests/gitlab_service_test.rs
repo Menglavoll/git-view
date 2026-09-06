@@ -10,12 +10,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use gitview_lib::errors::GitViewError;
-use gitview_lib::models::repository::{CreateRepoRequest, Visibility};
+use gitview_lib::models::account::GitPlatform;
+use gitview_lib::models::repository::{CreateRepoRequest, RemoteRepository, Visibility};
 use gitview_lib::services::gitlab_service::{
     derive_gitlab_api_url, GitLabClientConfig, GitLabProvider,
 };
-use gitview_lib::services::provider::GitHostingProvider;
-use wiremock::matchers::{header, method, path};
+use gitview_lib::services::provider::{GitHostingProvider, RemoteTagType};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TEST_TOKEN: &str = "glpat-abcd1234efgh5678ijkl"; // allow-token-pattern: 测试样本
@@ -26,6 +27,27 @@ fn client_config(api_base: &str) -> GitLabClientConfig {
         allow_invalid_certs: false,
         proxy_url: None,
         request_timeout_seconds: Some(5),
+    }
+}
+
+fn test_repo() -> RemoteRepository {
+    RemoteRepository {
+        id: "repo-1".to_string(),
+        account_id: "acc-1".to_string(),
+        platform: GitPlatform::Gitlab,
+        remote_id: "42".to_string(),
+        full_name: "group/demo".to_string(),
+        name: "demo".to_string(),
+        owner: "group".to_string(),
+        description: None,
+        visibility: Visibility::Private,
+        default_branch: "main".to_string(),
+        html_url: "https://gitlab.example/group/demo".to_string(),
+        ssh_url: None,
+        clone_url: "https://gitlab.example/group/demo.git".to_string(),
+        is_favorite: false,
+        last_pushed_at: None,
+        synced_at: chrono::Utc::now(),
     }
 }
 
@@ -157,6 +179,47 @@ async fn error_message_does_not_leak_token() {
         !display.contains(TEST_TOKEN),
         "错误消息不应包含 token 明文：{display}"
     );
+}
+
+#[tokio::test]
+async fn create_annotated_tag_sends_message_to_tags_api() {
+    let server = MockServer::start().await;
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    Mock::given(method("GET"))
+        .and(path("/projects/42/repository/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "main", "commit": { "id": sha, "title": "release commit" }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/projects/42/repository/tags/v1.0.0"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/projects/42/repository/tags"))
+        .and(header("private-token", TEST_TOKEN))
+        .and(query_param("tag_name", "v1.0.0"))
+        .and(query_param("ref", "main"))
+        .and(query_param("message", "release notes"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
+
+    let provider = GitLabProvider::new(client_config(&server.uri()), TEST_TOKEN.to_string())
+        .expect("应能构造");
+    let created = provider
+        .create_tag(
+            &test_repo(),
+            "main",
+            "v1.0.0",
+            RemoteTagType::Annotated,
+            Some("release notes"),
+        )
+        .await
+        .expect("附注 Tag 应创建成功");
+    assert_eq!(created.target_sha, sha);
 }
 
 /// list_repositories：完整响应（含 visibility）正确解析与映射，x-next-page 驱动 has_next

@@ -29,6 +29,9 @@
             ><span :title="row.repo.fullName">{{ row.repo.fullName }}</span></template
           >
         </ElTableColumn>
+        <ElTableColumn label="平台" width="90">
+          <template #default="{ row }">{{ platformName(row.repo.platform) }}</template>
+        </ElTableColumn>
         <ElTableColumn label="账号" width="110"
           ><template #default="{ row }">{{
             accountName(row.repo.accountId)
@@ -122,6 +125,11 @@
       >
       <ElTable :data="result.items" max-height="420" size="small">
         <ElTableColumn prop="repoName" label="项目" min-width="180" />
+        <ElTableColumn label="平台" width="90"
+          ><template #default="{ row }">{{
+            platformForResult(row.repoId)
+          }}</template></ElTableColumn
+        >
         <ElTableColumn prop="branch" label="分支" width="130" />
         <ElTableColumn prop="tagName" label="Tag" width="150" />
         <ElTableColumn label="提交" min-width="150"
@@ -153,6 +161,11 @@
         >
         <ElTableColumn label="原因" min-width="220"
           ><template #default="{ row }">{{ row.errorMessage ?? '—' }}</template></ElTableColumn
+        >
+        <ElTableColumn label="耗时" width="88"
+          ><template #default="{ row }">{{
+            formatDuration(row.durationMs)
+          }}</template></ElTableColumn
         >
       </ElTable>
     </template>
@@ -225,16 +238,24 @@
       >共 {{ rows.length }} 个项目，并发数 {{ concurrency }}。确认后将按执行时分支最新提交创建
       Tag。</p
     >
-    <ElTable :data="prechecks" max-height="380" size="small"
-      ><ElTableColumn prop="repoName" label="项目" min-width="170" /><ElTableColumn
-        prop="accountName"
-        label="账号"
-        width="110"
-      /><ElTableColumn prop="branch" label="分支" width="130" /><ElTableColumn
+    <ElTable :data="rows" max-height="380" size="small"
+      ><ElTableColumn label="项目" min-width="170"
+        ><template #default="{ row }">{{ row.repo.fullName }}</template></ElTableColumn
+      ><ElTableColumn label="平台" width="90"
+        ><template #default="{ row }">{{
+          platformName(row.repo.platform)
+        }}</template></ElTableColumn
+      ><ElTableColumn label="账号" width="110"
+        ><template #default="{ row }">{{
+          accountName(row.repo.accountId)
+        }}</template></ElTableColumn
+      ><ElTableColumn prop="branch" label="分支" width="130" /><ElTableColumn
         label="预检查 SHA"
         width="120"
         ><template #default="{ row }"
-          ><span :title="row.head?.sha">{{ row.head?.shortSha }}</span></template
+          ><span :title="precheckFor(row.repo.id)?.head?.sha">{{
+            precheckFor(row.repo.id)?.head?.shortSha ?? '—'
+          }}</span></template
         ></ElTableColumn
       ><ElTableColumn prop="tagName" label="Tag" width="150" /><ElTableColumn
         label="类型"
@@ -242,6 +263,15 @@
         ><template #default="{ row }">{{
           row.tagType === 'annotated' ? '附注' : '轻量'
         }}</template></ElTableColumn
+      ><ElTableColumn label="附注说明" min-width="180"
+        ><template #default="{ row }"
+          ><div
+            v-if="row.tagType === 'annotated'"
+            class="annotation-summary"
+            :title="row.message"
+            >{{ row.message }}</div
+          ><span v-else class="muted">—</span></template
+        ></ElTableColumn
       ></ElTable
     >
     <template #footer
@@ -345,6 +375,13 @@ const filteredAvailable = computed(() => {
 });
 const accountName = (id: string) =>
   props.accounts.find((account) => account.id === id)?.username ?? '—';
+const platformName = (platform: RemoteRepository['platform']) =>
+  ({ github: 'GitHub', gitlab: 'GitLab', gitee: 'Gitee' })[platform];
+const platformForResult = (repoId: string) =>
+  platformName(rows.value.find((row) => row.repo.id === repoId)?.repo.platform ?? 'github');
+const precheckFor = (repoId: string) => prechecks.value.find((item) => item.repoId === repoId);
+const formatDuration = (durationMs: number) =>
+  durationMs < 1000 ? `${durationMs} ms` : `${(durationMs / 1000).toFixed(1)} 秒`;
 const requestItems = computed<BatchTagItem[]>(() =>
   rows.value.map((row) => ({
     repoId: row.repo.id,
@@ -614,5 +651,12 @@ function addSelected(): void {
 .result-summary {
   margin-bottom: 12px;
   font-weight: 600;
+}
+.annotation-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: pre-wrap;
 }
 </style>

@@ -78,6 +78,8 @@ POST /repos/{owner}/{repo}/git/refs
 
 创建者采用 GitHub API 当前 Token 对应身份；如果平台要求 tagger 字段，使用账号身份可获得的信息，不让用户手动伪造身份。两步流程第二步失败时不自动覆盖或重试创建已有对象，应将项目标记为失败并记录脱敏错误。
 
+**API 核对结论（2026-09-06）**：GitHub 的 Tag Object API 只创建附注对象，轻量 Tag 只需创建 ref；附注流程必须再创建 `refs/tags/{tag}`。`tag`、`message`、`object`、`type` 是必填字段；`tagger` 可选，但提供时必须同时有姓名和邮箱。因此实现通过当前 Token 鉴权，由平台确认操作账号身份，不允许前端提供或伪造 tagger 信息。写入需要仓库 Contents 写权限。
+
 ## GitLab
 
 ### 分支 head
@@ -104,6 +106,8 @@ ref={branch}
 
 如果附注 Tag 需要额外字段，Provider 必须在预检查阶段能力探测或依据明确的 API 错误转换为“不支持附注 Tag”。
 
+**API 核对结论（2026-09-06）**：GitLab `POST /projects/:id/repository/tags` 使用 `tag_name` 与 `ref` 创建 Tag；可选的 `message` 会创建附注 Tag。当前 Provider 已按此映射轻量/附注两种类型，并把 `429` 转为限流错误。
+
 ## Gitee
 
 ### 分支 head
@@ -119,6 +123,8 @@ POST /repos/{owner}/{repo}/tags
 ```
 
 实现阶段以 Gitee 当前 Swagger 定义确认轻量和附注 Tag 的请求字段。若当前 API 仅支持轻量 Tag，附注 Tag 项目在预检查阶段返回 `annotated_tag_unsupported`，不能自动改为轻量 Tag。
+
+**当前实现结论**：Provider 保留现有 Header / Query 鉴权分支，使用仓库 Tag 创建接口创建轻量 Tag；附注 Tag 在预检查阶段明确返回 `annotated_tag_unsupported`。Gitee Swagger 页面为动态站点，仍需通过可写测试账号完成一次轻量 Tag 手动验收后，才能把该平台的字段与权限结论标记为最终确认。
 
 ## 权限与错误映射
 
