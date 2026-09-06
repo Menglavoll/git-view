@@ -128,6 +128,33 @@ pub fn get_remote_repository(pool: &DbPool, repo_id: &str) -> Result<RemoteRepos
     pool.with_conn(|conn| get_remote_repository_by_id(conn, repo_id))
 }
 
+/// 按调用方给定顺序批量读取远程仓库，并在访问平台 API 前完成输入完整性校验。
+///
+/// 同一批操作不能包含重复项目；任一项目不存在时立即返回错误，避免部分配置在
+/// 后台任务中才暴露为难以定位的失败。返回值顺序与 `repo_ids` 一致。
+pub fn get_remote_repositories_by_ids(
+    pool: &DbPool,
+    repo_ids: &[String],
+) -> Result<Vec<RemoteRepository>> {
+    let mut seen = HashSet::with_capacity(repo_ids.len());
+    for repo_id in repo_ids {
+        if repo_id.trim().is_empty() {
+            return Err(GitViewError::Internal("远程仓库 ID 不能为空".to_string()));
+        }
+        if !seen.insert(repo_id) {
+            return Err(GitViewError::Internal(
+                "批量请求中存在重复远程仓库".to_string(),
+            ));
+        }
+    }
+    pool.with_conn(|conn| {
+        repo_ids
+            .iter()
+            .map(|repo_id| get_remote_repository_by_id(conn, repo_id))
+            .collect()
+    })
+}
+
 /// 在已有连接上读取单个远程仓库（供事务内复用）。
 pub fn get_remote_repository_by_id(
     conn: &rusqlite::Connection,
@@ -478,6 +505,29 @@ mod tests {
         assert_eq!(got.remote_id, "12345");
         assert!(matches!(got.visibility, Visibility::Private));
         assert_eq!(got.ssh_url.as_deref(), Some("git@github.com:alice/new.git"));
+    }
+
+    #[test]
+    fn batch_get_remote_repositories_preserves_order_and_rejects_invalid_ids() {
+        let pool = fresh_pool();
+        seed_account(&pool, "acc-1", "github");
+        seed_repo(
+            &pool, "rr-1", "acc-1", "github", "alice", "first", "private", false, None,
+        );
+        seed_repo(
+            &pool, "rr-2", "acc-1", "github", "alice", "second", "private", false, None,
+        );
+
+        let ids = vec!["rr-2".to_string(), "rr-1".to_string()];
+        let repos = get_remote_repositories_by_ids(&pool, &ids).unwrap();
+        assert_eq!(
+            repos.iter().map(|repo| &repo.id).collect::<Vec<_>>(),
+            ids.iter().collect::<Vec<_>>()
+        );
+
+        let duplicate = vec!["rr-1".to_string(), "rr-1".to_string()];
+        assert!(get_remote_repositories_by_ids(&pool, &duplicate).is_err());
+        assert!(get_remote_repositories_by_ids(&pool, &["missing".to_string()]).is_err());
     }
 
     /// link_local_to_remote 把本地仓库关联到远程：写入 remote_repository_id 与 remote_url

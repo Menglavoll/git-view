@@ -34,7 +34,7 @@ description: "Task list for feature 004-batch-create-tags"
 
 ## Phase 4: Batch command and execution service
 
-- [ ] T016 在 `repository_service.rs` 增加按 ID 批量读取并校验远程仓库的辅助，拒绝重复或不存在项目。
+- [x] T016 在 `repository_service.rs` 增加按 ID 批量读取并校验远程仓库的辅助，拒绝重复或不存在项目。
 - [x] T017 在 `remote_repositories.rs` 增加 `get_remote_branch_head` command。
 - [x] T018 在 `remote_repositories.rs` 增加 `precheck_batch_tags` command，逐项目返回失败原因和预检查 SHA。
 - [x] T019 新增批量 Tag 执行 service：校验并发 1～20，建立有限并发队列，隔离项目失败，支持取消等待项。

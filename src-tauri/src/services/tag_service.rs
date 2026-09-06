@@ -337,6 +337,13 @@ pub fn start_batch_tags<R: tauri::Runtime>(
     prechecks: Vec<BatchTagPrecheckResult>,
 ) -> Result<BatchTagStartResult> {
     validate_request(&request)?;
+    let repo_ids: Vec<_> = request
+        .items
+        .iter()
+        .map(|item| item.repo_id.clone())
+        .collect();
+    // 在进入后台调度前统一确认所有仓库仍存在；预检查之后被删除的仓库不能进入队列。
+    let _repositories = repository_service::get_remote_repositories_by_ids(&pool, &repo_ids)?;
     if !prechecks_match_request(&request, &prechecks) {
         return Err(GitViewError::Internal(
             "预检查结果与当前批量 Tag 配置不一致，请重新预检查".to_string(),
