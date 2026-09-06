@@ -3,13 +3,15 @@
 //! 本模块把前端配置转换为受控的 Provider 调用：预检查不写远端，正式创建前再次
 //! 校验分支与同名 Tag。批次并非分布式事务，单个项目失败必须隔离并返回明细。
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Semaphore;
+use tauri::Emitter;
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::db::pool::DbPool;
 use crate::errors::{GitViewError, Result};
@@ -23,6 +25,50 @@ use crate::services::repository_service;
 pub const DEFAULT_CONCURRENCY: u32 = 3;
 pub const MAX_CONCURRENCY: u32 = 20;
 pub const MAX_ANNOTATION_CHARS: usize = 2000;
+pub const BATCH_TAG_PROGRESS_EVENT: &str = "batch-tag-progress";
+pub const BATCH_TAG_FINISHED_EVENT: &str = "batch-tag-finished";
+
+/// 运行中批次的可取消调度器。取消令牌只阻止尚未提交到远端平台的项目；
+/// 已开始的 HTTP 请求仍会等待其真实结果，符合远端 API 不可撤销的限制。
+#[derive(Clone, Default)]
+pub struct BatchTagManager {
+    handles: Arc<Mutex<HashMap<String, CancellationToken>>>,
+}
+
+impl BatchTagManager {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn insert(&self, batch_id: String, cancel: CancellationToken) -> Result<()> {
+        {
+            let mut handles = self.handles.lock().map_err(|error| {
+                GitViewError::Internal(format!("批量 Tag 调度器锁损坏：{error}"))
+            })?;
+            handles.insert(batch_id, cancel);
+        }
+        Ok(())
+    }
+
+    fn remove(&self, batch_id: &str) {
+        if let Ok(mut handles) = self.handles.lock() {
+            handles.remove(batch_id);
+        }
+    }
+
+    pub fn cancel(&self, batch_id: &str) -> Result<()> {
+        let cancel = self
+            .handles
+            .lock()
+            .map_err(|error| GitViewError::Internal(format!("批量 Tag 调度器锁损坏：{error}")))?
+            .get(batch_id)
+            .cloned()
+            .ok_or_else(|| GitViewError::NotFound(format!("批量 Tag 任务 {batch_id} 未在运行")))?;
+        cancel.cancel();
+        Ok(())
+    }
+}
 
 /// 前端为一个远程仓库提交的 Tag 配置。
 #[derive(Debug, Clone, Deserialize)]
@@ -97,6 +143,38 @@ pub struct BatchTagResult {
     pub failed: usize,
     pub cancelled: usize,
     pub items: Vec<BatchTagItemResult>,
+}
+
+/// 后台批次启动后的临时 ID。批次及其结果只在当前应用进程内有效。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchTagStartResult {
+    pub batch_id: String,
+}
+
+/// 前端用于显示排队、执行、完成三类实时状态；最终状态仍写入 `BatchTagItemResult`。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchTagExecutionStatus {
+    Running,
+    Success,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchTagProgressPayload {
+    pub batch_id: String,
+    pub total: usize,
+    pub completed: usize,
+    pub success: usize,
+    pub failed: usize,
+    pub cancelled: usize,
+    pub repo_id: String,
+    pub status: BatchTagExecutionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<BatchTagItemResult>,
 }
 
 /// 校验请求中不依赖网络的部分，保证每一条项目配置可独立得到可读失败原因。
@@ -248,63 +326,270 @@ async fn precheck_one(pool: &DbPool, item: &BatchTagItem) -> BatchTagPrecheckRes
     }
 }
 
-/// 有限并发创建。正式执行不信任旧预检查结果，仍由 Provider 再次检查冲突与分支 head。
-pub async fn create_batch_tags(
-    pool: &DbPool,
-    request: &BatchTagRequest,
-    prechecks: &[BatchTagPrecheckResult],
-) -> Result<BatchTagResult> {
-    validate_request(request)?;
+/// 启动后台批量创建。正式执行不信任旧预检查结果，仍由 Provider 再次检查冲突与分支 head。
+///
+/// 调用立即返回批次 ID；进度和最终结果通过 Tauri event 回传，避免长时间 IPC 阻塞。
+pub fn start_batch_tags<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pool: DbPool,
+    manager: BatchTagManager,
+    request: BatchTagRequest,
+    prechecks: Vec<BatchTagPrecheckResult>,
+) -> Result<BatchTagStartResult> {
+    validate_request(&request)?;
+    if !prechecks_match_request(&request, &prechecks) {
+        return Err(GitViewError::Internal(
+            "预检查结果与当前批量 Tag 配置不一致，请重新预检查".to_string(),
+        ));
+    }
     if prechecks.iter().any(|result| !result.can_create) {
         return Err(GitViewError::Internal(
             "存在预检查失败项目，不能创建 Tag".to_string(),
         ));
     }
-    let prechecked_shas: std::collections::HashMap<_, _> = prechecks
+    let batch_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    manager.insert(batch_id.clone(), cancel.clone())?;
+    let started = BatchTagStartResult {
+        batch_id: batch_id.clone(),
+    };
+
+    tauri::async_runtime::spawn(async move {
+        run_batch_tags(app, pool, manager, batch_id, request, prechecks, cancel).await;
+    });
+    Ok(started)
+}
+
+/// 预检查是确认窗口的安全门：每个项目必须有且仅有一条、并与当前配置一致。
+/// 真正创建时 Provider 仍会再次检查，因为预检查与执行之间远端状态可能变化。
+fn prechecks_match_request(
+    request: &BatchTagRequest,
+    prechecks: &[BatchTagPrecheckResult],
+) -> bool {
+    if request.items.len() != prechecks.len() {
+        return false;
+    }
+    let checks_by_repo: HashMap<_, _> = prechecks
+        .iter()
+        .map(|check| (check.repo_id.as_str(), check))
+        .collect();
+    checks_by_repo.len() == prechecks.len()
+        && request.items.iter().all(|item| {
+            checks_by_repo
+                .get(item.repo_id.as_str())
+                .is_some_and(|check| {
+                    check.branch == item.branch
+                        && check.tag_name == item.tag_name
+                        && check.tag_type == item.tag_type
+                })
+        })
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_batch_tags<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pool: DbPool,
+    manager: BatchTagManager,
+    batch_id: String,
+    request: BatchTagRequest,
+    prechecks: Vec<BatchTagPrecheckResult>,
+    cancel: CancellationToken,
+) {
+    let started = Instant::now();
+    let prechecked_shas: HashMap<_, _> = prechecks
         .iter()
         .filter_map(|r| r.head.as_ref().map(|h| (r.repo_id.clone(), h.sha.clone())))
         .collect();
-    let semaphore = Arc::new(Semaphore::new(request.concurrency as usize));
+    let precheck_names: HashMap<_, _> = prechecks
+        .iter()
+        .map(|result| (result.repo_id.clone(), result.repo_name.clone()))
+        .collect();
+    let total = request.items.len();
+    let mut queued: VecDeque<_> = request.items.into();
     let mut tasks = JoinSet::new();
-    for item in request.items.clone() {
-        let db = pool.clone();
-        let permit = Arc::clone(&semaphore);
-        let prechecked_sha = prechecked_shas.get(&item.repo_id).cloned();
-        tasks.spawn(async move {
-            let _guard = permit
-                .acquire_owned()
-                .await
-                .map_err(|_| GitViewError::Internal("批量 Tag 调度器已关闭".to_string()))?;
-            Ok::<_, GitViewError>(create_one(&db, item, prechecked_sha).await)
-        });
-    }
-    let mut items = Vec::with_capacity(request.items.len());
-    while let Some(joined) = tasks.join_next().await {
-        match joined {
-            Ok(Ok(result)) => items.push(result),
-            Ok(Err(err)) => return Err(err),
-            Err(err) => {
-                return Err(GitViewError::Internal(format!(
-                    "批量 Tag 工作线程异常：{err}"
-                )))
+    let mut items = Vec::with_capacity(total);
+    let mut success = 0;
+    let mut failed = 0;
+    let mut cancelled = 0;
+
+    while !queued.is_empty() || !tasks.is_empty() {
+        while !cancel.is_cancelled() && tasks.len() < request.concurrency as usize {
+            let Some(item) = queued.pop_front() else {
+                break;
+            };
+            emit_progress(
+                &app,
+                &batch_id,
+                total,
+                items.len(),
+                success,
+                failed,
+                cancelled,
+                &item.repo_id,
+                BatchTagExecutionStatus::Running,
+                None,
+            );
+            let db = pool.clone();
+            let prechecked_sha = prechecked_shas.get(&item.repo_id).cloned();
+            tasks.spawn(async move { create_one(&db, item, prechecked_sha).await });
+        }
+
+        if cancel.is_cancelled() {
+            while let Some(item) = queued.pop_front() {
+                let repo_id = item.repo_id.clone();
+                let result = cancelled_result(
+                    item,
+                    precheck_names.get(&repo_id).cloned(),
+                    prechecked_shas.get(&repo_id).cloned(),
+                );
+                let result_repo_id = result.repo_id.clone();
+                cancelled += 1;
+                items.push(result.clone());
+                emit_progress(
+                    &app,
+                    &batch_id,
+                    total,
+                    items.len(),
+                    success,
+                    failed,
+                    cancelled,
+                    &result_repo_id,
+                    BatchTagExecutionStatus::Cancelled,
+                    Some(result),
+                );
             }
         }
+
+        let Some(joined) = tasks.join_next().await else {
+            continue;
+        };
+        let Ok(result) = joined else {
+            tracing::error!("批量 Tag 工作线程异常：{joined:?}");
+            continue;
+        };
+        let result_repo_id = result.repo_id.clone();
+        let status = match result.status {
+            OperationStatus::Success => {
+                success += 1;
+                BatchTagExecutionStatus::Success
+            }
+            OperationStatus::Failed => {
+                failed += 1;
+                BatchTagExecutionStatus::Failed
+            }
+            OperationStatus::Cancelled => {
+                cancelled += 1;
+                BatchTagExecutionStatus::Cancelled
+            }
+        };
+        items.push(result.clone());
+        emit_progress(
+            &app,
+            &batch_id,
+            total,
+            items.len(),
+            success,
+            failed,
+            cancelled,
+            &result_repo_id,
+            status,
+            Some(result),
+        );
     }
-    let success = items
-        .iter()
-        .filter(|r| r.status == OperationStatus::Success)
-        .count();
-    let failed = items
-        .iter()
-        .filter(|r| r.status == OperationStatus::Failed)
-        .count();
-    Ok(BatchTagResult {
-        total: items.len(),
+
+    let result = BatchTagResult {
+        total,
         success,
         failed,
-        cancelled: 0,
+        cancelled,
         items,
-    })
+    };
+    let summary_status = if result.failed > 0 {
+        OperationStatus::Failed
+    } else if result.cancelled > 0 {
+        OperationStatus::Cancelled
+    } else {
+        OperationStatus::Success
+    };
+    let summary = format!(
+        "total={} success={} failed={} cancelled={}",
+        result.total, result.success, result.failed, result.cancelled
+    );
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let _ = log_service::record_operation(
+        &pool,
+        OperationType::BatchCreateTag,
+        "批量创建 Tag",
+        summary_status,
+        Some("batch_create_tag"),
+        Some(&summary),
+        None,
+        duration_ms,
+    );
+    let _ = app.emit(
+        BATCH_TAG_FINISHED_EVENT,
+        BatchTagFinishedPayload {
+            batch_id: batch_id.clone(),
+            result,
+        },
+    );
+    manager.remove(&batch_id);
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchTagFinishedPayload {
+    batch_id: String,
+    result: BatchTagResult,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_progress<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    batch_id: &str,
+    total: usize,
+    completed: usize,
+    success: usize,
+    failed: usize,
+    cancelled: usize,
+    repo_id: &str,
+    status: BatchTagExecutionStatus,
+    result: Option<BatchTagItemResult>,
+) {
+    let _ = app.emit(
+        BATCH_TAG_PROGRESS_EVENT,
+        BatchTagProgressPayload {
+            batch_id: batch_id.to_string(),
+            total,
+            completed,
+            success,
+            failed,
+            cancelled,
+            repo_id: repo_id.to_string(),
+            status,
+            result,
+        },
+    );
+}
+
+fn cancelled_result(
+    item: BatchTagItem,
+    repo_name: Option<String>,
+    prechecked_sha: Option<String>,
+) -> BatchTagItemResult {
+    BatchTagItemResult {
+        repo_id: item.repo_id,
+        repo_name: repo_name.unwrap_or_else(|| "—".to_string()),
+        branch: item.branch,
+        prechecked_sha,
+        actual_sha: None,
+        tag_name: item.tag_name,
+        tag_type: item.tag_type,
+        status: OperationStatus::Cancelled,
+        error_code: None,
+        error_message: Some("已取消，未向远程平台发起创建请求".to_string()),
+        duration_ms: 0,
+    }
 }
 
 async fn create_one(
@@ -445,5 +730,40 @@ mod tests {
         assert!(validate_tag_name("bad name").is_err());
         assert!(validate_tag_name("release..bad").is_err());
         assert!(validate_tag_name("release.lock").is_err());
+    }
+
+    #[test]
+    fn prechecks_must_match_current_request() {
+        let request = BatchTagRequest {
+            items: vec![BatchTagItem {
+                repo_id: "repo-1".to_string(),
+                branch: "main".to_string(),
+                tag_name: "v1.0.0".to_string(),
+                tag_type: RemoteTagType::Lightweight,
+                message: None,
+            }],
+            concurrency: 3,
+        };
+        let check = BatchTagPrecheckResult {
+            repo_id: "repo-1".to_string(),
+            repo_name: "owner/repo".to_string(),
+            account_name: "user".to_string(),
+            branch: "main".to_string(),
+            head: None,
+            tag_name: "v1.0.0".to_string(),
+            tag_type: RemoteTagType::Lightweight,
+            can_create: true,
+            error_code: None,
+            message: None,
+        };
+        assert!(prechecks_match_request(
+            &request,
+            std::slice::from_ref(&check)
+        ));
+
+        let mut stale = check;
+        stale.tag_name = "v0.9.0".to_string();
+        assert!(!prechecks_match_request(&request, &[stale]));
+        assert!(!prechecks_match_request(&request, &[]));
     }
 }

@@ -3,13 +3,16 @@
 // 封装与 src-tauri/src/commands/remote_repositories.rs 对应的 5 个 IPC 命令。
 // =====================================================================
 
-import { invokeCmd } from './tauri';
+import { invokeCmd, listenEvent } from './tauri';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { CommitDetail, CommitPage } from '@/types/git';
 import type { RemoteRepository } from '@/types/repository';
 import type {
   BatchTagPrecheckResult,
   BatchTagRequest,
-  BatchTagResult,
+  BatchTagFinishedPayload,
+  BatchTagProgressPayload,
+  BatchTagStartResult,
   BranchHead,
 } from '@/types/tag';
 
@@ -78,11 +81,24 @@ export const remoteRepositoryApi = {
     return invokeCmd<BatchTagPrecheckResult[]>('precheck_batch_tags', { payload });
   },
 
-  /** 确认窗口后的实际远程创建；后端会重新检查分支 head 与同名 Tag。 */
-  createBatchTags(
+  /** 启动后台远程创建；后端会重新检查分支 head 与同名 Tag。 */
+  startBatchTags(
     payload: BatchTagRequest,
     prechecks: BatchTagPrecheckResult[],
-  ): Promise<BatchTagResult> {
-    return invokeCmd<BatchTagResult>('create_batch_tags', { payload, prechecks });
+  ): Promise<BatchTagStartResult> {
+    return invokeCmd<BatchTagStartResult>('start_batch_tags', { payload, prechecks });
+  },
+
+  /** 停止尚未开始的项目；已经发出的远程请求无法撤回。 */
+  cancelBatchTags(batchId: string): Promise<void> {
+    return invokeCmd<void>('cancel_batch_tags', { batchId });
+  },
+
+  onBatchTagProgress(handler: (payload: BatchTagProgressPayload) => void): Promise<UnlistenFn> {
+    return listenEvent('batch-tag-progress', handler);
+  },
+
+  onBatchTagFinished(handler: (payload: BatchTagFinishedPayload) => void): Promise<UnlistenFn> {
+    return listenEvent('batch-tag-finished', handler);
   },
 };

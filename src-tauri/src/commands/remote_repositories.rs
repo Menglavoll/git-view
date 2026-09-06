@@ -2,7 +2,7 @@
 
 #![allow(clippy::needless_pass_by_value)]
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::errors::Result;
 use crate::models::git::CommitDetail;
@@ -10,7 +10,9 @@ use crate::models::repository::RemoteRepository;
 use crate::services::account_service;
 use crate::services::provider::{BranchHead, CommitPage};
 use crate::services::repository_service::{self, RemoteRepoFilter};
-use crate::services::tag_service::{self, BatchTagPrecheckResult, BatchTagRequest, BatchTagResult};
+use crate::services::tag_service::{
+    self, BatchTagPrecheckResult, BatchTagRequest, BatchTagStartResult,
+};
 use crate::AppState;
 
 /// 查询远程仓库列表（支持多条件筛选）。
@@ -148,12 +150,25 @@ pub async fn precheck_batch_tags(
     tag_service::precheck_batch_tags(&state.db, &payload).await
 }
 
-/// 确认后的批量 Tag 创建。服务层以有限并发执行且每个项目独立返回结果。
+/// 确认后启动后台批量 Tag 创建。逐项目进度和最终结果通过 Tauri event 回传。
 #[tauri::command]
-pub async fn create_batch_tags(
+pub fn start_batch_tags(
+    app: AppHandle,
     state: State<'_, AppState>,
     payload: BatchTagRequest,
     prechecks: Vec<BatchTagPrecheckResult>,
-) -> Result<BatchTagResult> {
-    tag_service::create_batch_tags(&state.db, &payload, &prechecks).await
+) -> Result<BatchTagStartResult> {
+    tag_service::start_batch_tags(
+        app,
+        state.db.clone(),
+        state.batch_tag_manager.clone(),
+        payload,
+        prechecks,
+    )
+}
+
+/// 请求停止尚未开始的项目；已提交给远端平台的请求会继续返回最终结果。
+#[tauri::command]
+pub fn cancel_batch_tags(state: State<'_, AppState>, batch_id: String) -> Result<()> {
+    state.batch_tag_manager.cancel(&batch_id)
 }

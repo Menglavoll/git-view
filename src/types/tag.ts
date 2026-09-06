@@ -64,3 +64,28 @@ export interface BatchTagResult {
   cancelled: number;
   items: BatchTagItemResult[];
 }
+
+/** 后台批次启动结果；仅当前应用进程内有效。 */
+export interface BatchTagStartResult {
+  batchId: string;
+}
+
+/** 进度事件中的执行状态，`running` 表示请求已经开始但尚无最终结果。 */
+export type BatchTagExecutionStatus = 'running' | BatchTagItemStatus;
+
+export interface BatchTagProgressPayload {
+  batchId: string;
+  total: number;
+  completed: number;
+  success: number;
+  failed: number;
+  cancelled: number;
+  repoId: string;
+  status: BatchTagExecutionStatus;
+  result?: BatchTagItemResult;
+}
+
+export interface BatchTagFinishedPayload {
+  batchId: string;
+  result: BatchTagResult;
+}

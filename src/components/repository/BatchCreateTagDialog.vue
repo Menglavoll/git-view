@@ -4,6 +4,8 @@
     title="批量添加 Tag"
     width="min(1180px, 94vw)"
     :close-on-click-modal="false"
+    :close-on-press-escape="stage !== 'executing'"
+    :show-close="stage !== 'executing'"
   >
     <template v-if="stage === 'editing' || stage === 'prechecking'">
       <div class="toolbar">
@@ -89,6 +91,31 @@
       <p v-if="validationMessage" class="error">{{ validationMessage }}</p>
     </template>
 
+    <template v-else-if="stage === 'executing'">
+      <div class="result-summary"
+        >正在创建：已完成 {{ progress.completed }}/{{ progress.total }}，成功
+        {{ progress.success }}，失败 {{ progress.failed }}，取消 {{ progress.cancelled }}</div
+      >
+      <p class="muted">已提交到远程平台的请求无法撤销；取消只会停止尚未开始的项目。</p>
+      <ElTable :data="executionRows" max-height="420" size="small">
+        <ElTableColumn prop="repo.fullName" label="项目" min-width="180"
+          ><template #default="{ row }">{{ row.repo.fullName }}</template></ElTableColumn
+        >
+        <ElTableColumn prop="branch" label="分支" width="140" />
+        <ElTableColumn prop="tagName" label="Tag" width="160" />
+        <ElTableColumn label="状态" width="100">
+          <template #default="{ row }">
+            <ElTag :type="executionTagType(row.executionStatus)">{{
+              executionStatusText(row.executionStatus)
+            }}</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="说明" min-width="240">
+          <template #default="{ row }">{{ row.executionResult?.errorMessage ?? '—' }}</template>
+        </ElTableColumn>
+      </ElTable>
+    </template>
+
     <template v-else-if="stage === 'result' && result">
       <div class="result-summary"
         >完成：成功 {{ result.success }}，失败 {{ result.failed }}，取消 {{ result.cancelled }}</div
@@ -131,7 +158,10 @@
     </template>
 
     <template #footer>
-      <ElButton @click="visible = false">关闭</ElButton>
+      <ElButton v-if="stage !== 'executing'" @click="visible = false">关闭</ElButton>
+      <ElButton v-else type="warning" :loading="cancelling" :disabled="cancelling" @click="cancel"
+        >取消剩余任务</ElButton
+      >
       <ElButton v-if="stage === 'result' && result?.failed" type="warning" @click="retryFailures"
         >重试失败项目</ElButton
       >
@@ -247,15 +277,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 
 import { remoteRepositoryApi } from '@/api/remoteRepository.api';
 import type { Account } from '@/types/account';
 import type { RemoteRepository } from '@/types/repository';
 import type {
   BatchTagItem,
+  BatchTagExecutionStatus,
+  BatchTagFinishedPayload,
   BatchTagPrecheckResult,
+  BatchTagProgressPayload,
   BatchTagResult,
   BranchHead,
   RemoteTagType,
@@ -269,6 +303,8 @@ interface Row {
   message?: string;
   head?: BranchHead;
   headError?: string;
+  executionStatus?: BatchTagExecutionStatus;
+  executionResult?: BatchTagResult['items'][number];
 }
 const props = defineProps<{
   modelValue: boolean;
@@ -284,7 +320,7 @@ const visible = computed({
   get: () => props.modelValue,
   set: (value) => emit('update:modelValue', value),
 });
-const stage = ref<'editing' | 'prechecking' | 'result'>('editing');
+const stage = ref<'editing' | 'prechecking' | 'executing' | 'result'>('editing');
 const rows = ref<Row[]>([]);
 const concurrency = ref(3);
 const unifiedTagName = ref('');
@@ -293,6 +329,11 @@ const branchLoading = ref<Record<string, boolean>>({});
 const prechecks = ref<BatchTagPrecheckResult[]>([]);
 const result = ref<BatchTagResult>();
 const executing = ref(false);
+const cancelling = ref(false);
+const activeBatchId = ref<string>();
+const progress = ref({ total: 0, completed: 0, success: 0, failed: 0, cancelled: 0 });
+let unlistenProgress: UnlistenFn | undefined;
+let unlistenFinished: UnlistenFn | undefined;
 const precheckDialogVisible = ref(false);
 const confirmDialogVisible = ref(false);
 const addDialogVisible = ref(false);
@@ -318,16 +359,28 @@ const canPrecheck = computed(
   () => rows.value.length > 0 && !validationMessage.value && stage.value === 'editing',
 );
 const hasPrecheckFailure = computed(() => prechecks.value.some((item) => !item.canCreate));
+const executionRows = computed(() => rows.value);
 watch(
   () => props.modelValue,
   (open) => {
     if (open) reset(props.selectedRepos);
   },
 );
+onMounted(async () => {
+  unlistenProgress = await remoteRepositoryApi.onBatchTagProgress(handleProgress);
+  unlistenFinished = await remoteRepositoryApi.onBatchTagFinished(handleFinished);
+});
+onBeforeUnmount(() => {
+  unlistenProgress?.();
+  unlistenFinished?.();
+});
 function reset(repos: RemoteRepository[]): void {
   stage.value = 'editing';
   result.value = undefined;
   prechecks.value = [];
+  activeBatchId.value = undefined;
+  progress.value = { total: 0, completed: 0, success: 0, failed: 0, cancelled: 0 };
+  cancelling.value = false;
   unifiedTagName.value = '';
   concurrency.value = 3;
   branchOptions.value = {};
@@ -423,17 +476,91 @@ function openConfirm(): void {
 async function execute(): Promise<void> {
   executing.value = true;
   try {
-    result.value = await remoteRepositoryApi.createBatchTags(
+    const started = await remoteRepositoryApi.startBatchTags(
       { items: requestItems.value, concurrency: concurrency.value },
       prechecks.value,
     );
+    activeBatchId.value = started.batchId;
+    progress.value = {
+      total: rows.value.length,
+      completed: 0,
+      success: 0,
+      failed: 0,
+      cancelled: 0,
+    };
+    rows.value.forEach((row) => {
+      row.executionStatus = undefined;
+      row.executionResult = undefined;
+    });
     confirmDialogVisible.value = false;
-    stage.value = 'result';
+    stage.value = 'executing';
   } catch (error) {
     ElMessage.error(`创建 Tag 失败：${error instanceof Error ? error.message : String(error)}`);
   } finally {
     executing.value = false;
   }
+}
+function handleProgress(payload: BatchTagProgressPayload): void {
+  if (payload.batchId !== activeBatchId.value) return;
+  progress.value = {
+    total: payload.total,
+    completed: payload.completed,
+    success: payload.success,
+    failed: payload.failed,
+    cancelled: payload.cancelled,
+  };
+  const row = rows.value.find((item) => item.repo.id === payload.repoId);
+  if (row) {
+    row.executionStatus = payload.status;
+    if (payload.result) row.executionResult = payload.result;
+  }
+}
+function handleFinished(payload: BatchTagFinishedPayload): void {
+  if (payload.batchId !== activeBatchId.value) return;
+  result.value = payload.result;
+  payload.result.items.forEach((item) => {
+    const row = rows.value.find((candidate) => candidate.repo.id === item.repoId);
+    if (row) {
+      row.executionStatus = item.status;
+      row.executionResult = item;
+    }
+  });
+  activeBatchId.value = undefined;
+  cancelling.value = false;
+  stage.value = 'result';
+}
+async function cancel(): Promise<void> {
+  if (!activeBatchId.value || cancelling.value) return;
+  cancelling.value = true;
+  try {
+    await remoteRepositoryApi.cancelBatchTags(activeBatchId.value);
+    ElMessage.info('已请求取消尚未开始的项目，正在执行的请求会继续完成。');
+  } catch (error) {
+    ElMessage.error(`取消失败：${error instanceof Error ? error.message : String(error)}`);
+    cancelling.value = false;
+  }
+}
+function executionStatusText(status?: BatchTagExecutionStatus): string {
+  switch (status) {
+    case 'running':
+      return '执行中';
+    case 'success':
+      return '成功';
+    case 'failed':
+      return '失败';
+    case 'cancelled':
+      return '已取消';
+    default:
+      return '等待中';
+  }
+}
+function executionTagType(
+  status?: BatchTagExecutionStatus,
+): 'success' | 'danger' | 'info' | 'warning' {
+  if (status === 'success') return 'success';
+  if (status === 'failed') return 'danger';
+  if (status === 'cancelled') return 'info';
+  return 'warning';
 }
 function retryFailures(): void {
   const failed = new Set(
