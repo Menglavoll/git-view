@@ -2,14 +2,17 @@
 
 #![allow(clippy::needless_pass_by_value)]
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::errors::Result;
 use crate::models::git::CommitDetail;
 use crate::models::repository::RemoteRepository;
 use crate::services::account_service;
-use crate::services::provider::CommitPage;
+use crate::services::provider::{BranchHead, CommitPage};
 use crate::services::repository_service::{self, RemoteRepoFilter};
+use crate::services::tag_service::{
+    self, BatchTagPrecheckResult, BatchTagRequest, BatchTagStartResult,
+};
 use crate::AppState;
 
 /// 查询远程仓库列表（支持多条件筛选）。
@@ -124,4 +127,48 @@ pub async fn list_remote_branches(
     let repo = repository_service::get_remote_repository(&state.db, &repo_id)?;
     let provider = account_service::provider_for_account(&state.db, &repo.account_id)?;
     provider.list_branches(&repo).await
+}
+
+/// 读取指定远程分支的最新提交，供批量 Tag 配置和确认摘要核对。
+#[tauri::command]
+pub async fn get_remote_branch_head(
+    state: State<'_, AppState>,
+    repo_id: String,
+    branch: String,
+) -> Result<BranchHead> {
+    let repo = repository_service::get_remote_repository(&state.db, &repo_id)?;
+    let provider = account_service::provider_for_account(&state.db, &repo.account_id)?;
+    provider.get_branch_head(&repo, &branch).await
+}
+
+/// 批量 Tag 的只读预检查；不写远程仓库，也不记录写操作日志。
+#[tauri::command]
+pub async fn precheck_batch_tags(
+    state: State<'_, AppState>,
+    payload: BatchTagRequest,
+) -> Result<Vec<BatchTagPrecheckResult>> {
+    tag_service::precheck_batch_tags(&state.db, &payload).await
+}
+
+/// 确认后启动后台批量 Tag 创建。逐项目进度和最终结果通过 Tauri event 回传。
+#[tauri::command]
+pub fn start_batch_tags(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    payload: BatchTagRequest,
+    prechecks: Vec<BatchTagPrecheckResult>,
+) -> Result<BatchTagStartResult> {
+    tag_service::start_batch_tags(
+        app,
+        state.db.clone(),
+        state.batch_tag_manager.clone(),
+        payload,
+        prechecks,
+    )
+}
+
+/// 请求停止尚未开始的项目；已提交给远端平台的请求会继续返回最终结果。
+#[tauri::command]
+pub fn cancel_batch_tags(state: State<'_, AppState>, batch_id: String) -> Result<()> {
+    state.batch_tag_manager.cancel(&batch_id)
 }

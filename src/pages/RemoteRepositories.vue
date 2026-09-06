@@ -10,6 +10,9 @@
         <ElButton type="primary" :disabled="selection.length === 0" @click="onBatchClone">
           批量 Clone ({{ selection.length }})
         </ElButton>
+        <ElButton type="success" :disabled="selection.length === 0" @click="onBatchCreateTag">
+          批量添加 Tag ({{ selection.length }})
+        </ElButton>
         <ElButton :loading="store.syncing" @click="onRefresh()">同步全部</ElButton>
       </div>
     </div>
@@ -91,6 +94,13 @@
       :selected-repos="cloneTargets"
       @started="onCloneStarted"
     />
+    <BatchCreateTagDialog
+      v-model="tagDialogVisible"
+      :selected-repos="tagTargets"
+      :available-repos="store.repositories"
+      :accounts="accountStore.accounts"
+      @load-all="onLoadAllForTag"
+    />
   </div>
 </template>
 
@@ -101,6 +111,7 @@ import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
 
 import BatchCloneDialog from '@/components/clone/BatchCloneDialog.vue';
+import BatchCreateTagDialog from '@/components/repository/BatchCreateTagDialog.vue';
 import RemoteRepoTable from '@/components/repository/RemoteRepoTable.vue';
 import RemoteRepoTree from '@/components/repository/RemoteRepoTree.vue';
 import RepoDetailDrawer from '@/components/repository/RepoDetailDrawer.vue';
@@ -122,6 +133,8 @@ const drawerVisible = ref(false);
 const activeRepo = ref<RemoteRepository | null>(null);
 const batchDialogVisible = ref(false);
 const cloneTargets = ref<RemoteRepository[]>([]);
+const tagDialogVisible = ref(false);
+const tagTargets = ref<RemoteRepository[]>([]);
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -184,6 +197,24 @@ function onBatchClone(): void {
   if (selection.value.length === 0) return;
   cloneTargets.value = [...selection.value];
   batchDialogVisible.value = true;
+}
+
+/** 复用当前树/列表的选择结果打开批量 Tag 配置页。 */
+function onBatchCreateTag(): void {
+  if (selection.value.length === 0) return;
+  tagTargets.value = [...selection.value];
+  tagDialogVisible.value = true;
+}
+
+/** 批量 Tag 的添加器允许清除页面筛选，重新提供全部已同步远程项目。 */
+function onLoadAllForTag(): void {
+  searchText.value = '';
+  filterPlatforms.value = [];
+  filterAccountId.value = undefined;
+  filterFavorite.value = false;
+  void store.fetchList({}).catch((e) => {
+    ElMessage.error(`加载全部仓库失败：${e instanceof Error ? e.message : String(e)}`);
+  });
 }
 
 function onCloneStarted(): void {

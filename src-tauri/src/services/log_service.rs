@@ -329,6 +329,8 @@ const fn op_type_to_str(op: OperationType) -> &'static str {
         OperationType::Commit => "commit",
         OperationType::Checkout => "checkout",
         OperationType::CreateBranch => "create_branch",
+        OperationType::BatchCreateTag => "batch_create_tag",
+        OperationType::CreateTag => "create_tag",
         OperationType::ScanRepos => "scan_repos",
         OperationType::DiscardChanges => "discard_changes",
     }
@@ -351,6 +353,8 @@ fn op_type_from_str(s: &str) -> OperationType {
         "commit" => OperationType::Commit,
         "checkout" => OperationType::Checkout,
         "create_branch" => OperationType::CreateBranch,
+        "batch_create_tag" => OperationType::BatchCreateTag,
+        "create_tag" => OperationType::CreateTag,
         "scan_repos" => OperationType::ScanRepos,
         // 兜底到 DiscardChanges：它是最后一个分支，正常库内只会是该值或上列之一
         _ => OperationType::DiscardChanges,

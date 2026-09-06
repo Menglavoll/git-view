@@ -37,6 +37,10 @@ pub enum OperationType {
     Checkout,
     /// 新建分支
     CreateBranch,
+    /// 批量创建 Tag 的汇总记录。
+    BatchCreateTag,
+    /// 单个远程仓库创建 Tag 的明细记录。
+    CreateTag,
     /// 扫描本地仓库目录
     ScanRepos,
     /// 丢弃工作区变更

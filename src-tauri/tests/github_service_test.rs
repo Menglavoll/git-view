@@ -10,9 +10,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use gitview_lib::errors::GitViewError;
-use gitview_lib::models::repository::{CreateRepoRequest, Visibility};
+use gitview_lib::models::account::GitPlatform;
+use gitview_lib::models::repository::{CreateRepoRequest, RemoteRepository, Visibility};
 use gitview_lib::services::github_service::GitHubProvider;
-use gitview_lib::services::provider::GitHostingProvider;
+use gitview_lib::services::provider::{GitHostingProvider, RemoteTagType};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -21,6 +22,27 @@ const TEST_TOKEN: &str = "ghp_aaaabbbbccccddddeeeeffffgggghhhhiiii"; // allow-to
 fn make_provider(base: &str) -> GitHubProvider {
     GitHubProvider::new(Some(base.to_string()), TEST_TOKEN.to_string(), None)
         .expect("应能构造 GitHubProvider")
+}
+
+fn test_repo() -> RemoteRepository {
+    RemoteRepository {
+        id: "repo-1".to_string(),
+        account_id: "acc-1".to_string(),
+        platform: GitPlatform::Github,
+        remote_id: "1".to_string(),
+        full_name: "octocat/demo".to_string(),
+        name: "demo".to_string(),
+        owner: "octocat".to_string(),
+        description: None,
+        visibility: Visibility::Private,
+        default_branch: "main".to_string(),
+        html_url: "https://github.com/octocat/demo".to_string(),
+        ssh_url: None,
+        clone_url: "https://github.com/octocat/demo.git".to_string(),
+        is_favorite: false,
+        last_pushed_at: None,
+        synced_at: chrono::Utc::now(),
+    }
 }
 
 /// create_repository：201 成功，响应正确映射为 RemoteRepository
@@ -160,4 +182,54 @@ async fn error_message_does_not_leak_token() {
         !display.contains(TEST_TOKEN),
         "错误消息不应包含 token 明文：{display}"
     );
+}
+
+/// 附注 Tag 必须先创建 Tag object，再创建对应 ref；两步都成功才报告成功。
+#[tokio::test]
+async fn create_annotated_tag_uses_tag_object_then_ref() {
+    let server = MockServer::start().await;
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    Mock::given(method("GET"))
+        .and(path("/repos/octocat/demo/branches/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "name": "main", "commit": { "sha": sha }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/octocat/demo/commits/{sha}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "sha": sha, "commit": { "message": "release commit" }, "parents": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/octocat/demo/git/ref/tags/v1.0.0"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/octocat/demo/git/tags"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "sha": "tag-object-sha"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/repos/octocat/demo/git/refs"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
+
+    let created = make_provider(&server.uri())
+        .create_tag(
+            &test_repo(),
+            "main",
+            "v1.0.0",
+            RemoteTagType::Annotated,
+            Some("release notes"),
+        )
+        .await
+        .expect("附注 Tag 应创建成功");
+    assert_eq!(created.target_sha, sha);
 }

@@ -21,6 +21,32 @@ use crate::errors::{GitViewError, Result};
 use crate::models::git::{CommitDetail, CommitSummary};
 use crate::models::repository::{CreateRepoRequest, RemoteRepository};
 
+/// 远程 Tag 的类型。轻量 Tag 直接指向提交；附注 Tag 带说明与平台身份元数据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteTagType {
+    Lightweight,
+    Annotated,
+}
+
+/// 指定分支当前最新提交，供用户确认创建 Tag 的基准。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchHead {
+    pub branch: String,
+    pub sha: String,
+    pub short_sha: String,
+    pub subject: String,
+}
+
+/// 平台创建 Tag 后的统一回执。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedRemoteTag {
+    pub name: String,
+    pub target_sha: String,
+}
+
 /// 平台用户档案（连接测试与账号同步用）。
 ///
 /// 跨平台统一字段集合 —— 各 Provider 负责把 API 响应映射到本结构。
@@ -111,6 +137,36 @@ pub trait GitHostingProvider: Send + Sync {
     /// 前端仍至少能选到默认分支，克隆功能不被阻断（见 research.md 决策）。
     async fn list_branches(&self, repo: &RemoteRepository) -> Result<Vec<String>> {
         Ok(vec![repo.default_branch.clone()])
+    }
+
+    /// 查询指定远程分支的最新提交。默认实现明确表示平台未支持，避免创建 Tag 时猜测 SHA。
+    async fn get_branch_head(&self, _repo: &RemoteRepository, _branch: &str) -> Result<BranchHead> {
+        Err(GitViewError::Internal(
+            "该平台暂不支持读取分支最新提交".to_string(),
+        ))
+    }
+
+    /// 检查同名 Tag 是否已经存在。`true` 表示冲突，创建流程绝不覆盖。
+    async fn tag_exists(&self, _repo: &RemoteRepository, _tag_name: &str) -> Result<bool> {
+        Err(GitViewError::Internal("该平台暂不支持检查 Tag".to_string()))
+    }
+
+    /// 是否支持目标 Tag 类型。默认支持；能力不足的 Provider 必须在预检查阶段拒绝，
+    /// 而不能在用户确认后静默降级为另一类型。
+    fn supports_tag_type(&self, _tag_type: RemoteTagType) -> bool {
+        true
+    }
+
+    /// 基于指定分支创建 Tag。实现方负责在写入前重新解析分支 head 与冲突状态。
+    async fn create_tag(
+        &self,
+        _repo: &RemoteRepository,
+        _branch: &str,
+        _tag_name: &str,
+        _tag_type: RemoteTagType,
+        _message: Option<&str>,
+    ) -> Result<CreatedRemoteTag> {
+        Err(GitViewError::Internal("该平台暂不支持创建 Tag".to_string()))
     }
 
     /// 获取单个提交的详情（元信息 + 改动文件 + 每文件 diff）。

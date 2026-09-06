@@ -27,6 +27,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 use crate::db::pool::DbPool;
 use crate::services::account_service::AccountServiceState;
 use crate::services::clone_task_service::CloneManager;
+use crate::services::tag_service::BatchTagManager;
 
 // =====================================================================
 // 应用全局状态（T019）
@@ -43,6 +44,8 @@ pub struct AppState {
     pub account_service_state: AccountServiceState,
     /// Clone 任务调度器（持有 git CLI + semaphore + cancel token map）
     pub clone_manager: CloneManager,
+    /// 批量 Tag 运行时调度器（仅当前应用会话内保留）
+    pub batch_tag_manager: BatchTagManager,
 }
 
 // =====================================================================
@@ -135,6 +138,7 @@ fn init_app_state() -> errors::Result<AppState> {
         db,
         account_service_state: AccountServiceState::new(),
         clone_manager,
+        batch_tag_manager: BatchTagManager::new(),
     })
 }
 
@@ -196,6 +200,10 @@ pub fn run() {
             commands::remote_repositories::list_remote_commits,
             commands::remote_repositories::get_remote_commit_detail,
             commands::remote_repositories::list_remote_branches,
+            commands::remote_repositories::get_remote_branch_head,
+            commands::remote_repositories::precheck_batch_tags,
+            commands::remote_repositories::start_batch_tags,
+            commands::remote_repositories::cancel_batch_tags,
             // US3 Clone 任务
             commands::clone_tasks::create_clone_tasks,
             commands::clone_tasks::start_clone_tasks,

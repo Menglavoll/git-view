@@ -18,6 +18,8 @@ export type OperationType =
   | 'commit'
   | 'checkout'
   | 'create_branch'
+  | 'batch_create_tag'
+  | 'create_tag'
   | 'scan_repos'
   | 'discard_changes';
 

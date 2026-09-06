@@ -19,8 +19,8 @@ use crate::models::account::GitPlatform;
 use crate::models::git::{CommitDetail, CommitFile, CommitFileStatus, CommitStats, CommitSummary};
 use crate::models::repository::{CreateRepoRequest, RemoteRepository, Visibility};
 use crate::services::provider::{
-    parse_iso_datetime, truncate_file_diff, CommitPage, GitHostingProvider, RepositoryPage,
-    UserProfile,
+    parse_iso_datetime, truncate_file_diff, BranchHead, CommitPage, CreatedRemoteTag,
+    GitHostingProvider, RemoteTagType, RepositoryPage, UserProfile,
 };
 use crate::utils::redact::redact_token;
 
@@ -115,6 +115,23 @@ struct GitHubOwner {
 #[derive(Debug, Deserialize)]
 struct GitHubBranchResp {
     name: String,
+}
+
+/// GitHub 单分支响应：只取分支 head SHA，提交说明另由 commits API 读取。
+#[derive(Debug, Deserialize)]
+struct GitHubBranchHeadResp {
+    name: String,
+    commit: GitHubBranchCommit,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubBranchCommit {
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubTagObjectResp {
+    sha: String,
 }
 
 /// GitHub 提交列表项字段子集。
@@ -481,6 +498,179 @@ impl GitHostingProvider for GitHubProvider {
         }
 
         Ok(branches)
+    }
+
+    async fn get_branch_head(&self, repo: &RemoteRepository, branch: &str) -> Result<BranchHead> {
+        let branch_path: String = url::form_urlencoded::byte_serialize(branch.as_bytes()).collect();
+        let url = format!(
+            "{}/repos/{}/{}/branches/{}",
+            self.api_base_url.trim_end_matches('/'),
+            repo.owner,
+            repo.name,
+            branch_path,
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.token)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|e| map_request_error("GitHub", &e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return if status.as_u16() == 404 {
+                Err(GitViewError::BranchNotFound(branch.to_string()))
+            } else {
+                Err(map_status_error("GitHub", status.as_u16()))
+            };
+        }
+        let branch_resp: GitHubBranchHeadResp = resp.json().await.map_err(|e| {
+            GitViewError::ResponseDecode(format!(
+                "解析 GitHub 分支响应失败：{}",
+                redact_token(&e.to_string())
+            ))
+        })?;
+        let commit_url = format!(
+            "{}/repos/{}/{}/commits/{}",
+            self.api_base_url.trim_end_matches('/'),
+            repo.owner,
+            repo.name,
+            branch_resp.commit.sha,
+        );
+        let commit_resp = self
+            .client
+            .get(&commit_url)
+            .bearer_auth(&self.token)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|e| map_request_error("GitHub", &e))?;
+        let commit_status = commit_resp.status();
+        if !commit_status.is_success() {
+            return Err(map_status_error("GitHub", commit_status.as_u16()));
+        }
+        let commit: GitHubCommitDetailResp = commit_resp.json().await.map_err(|e| {
+            GitViewError::ResponseDecode(format!(
+                "解析 GitHub 提交响应失败：{}",
+                redact_token(&e.to_string())
+            ))
+        })?;
+        Ok(BranchHead {
+            branch: branch_resp.name,
+            short_sha: branch_resp.commit.sha.chars().take(7).collect(),
+            sha: branch_resp.commit.sha,
+            subject: commit
+                .commit
+                .message
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+        })
+    }
+
+    async fn tag_exists(&self, repo: &RemoteRepository, tag_name: &str) -> Result<bool> {
+        let tag_path: String = url::form_urlencoded::byte_serialize(tag_name.as_bytes()).collect();
+        let url = format!(
+            "{}/repos/{}/{}/git/ref/tags/{}",
+            self.api_base_url.trim_end_matches('/'),
+            repo.owner,
+            repo.name,
+            tag_path
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .bearer_auth(&self.token)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|e| map_request_error("GitHub", &e))?;
+        match resp.status().as_u16() {
+            200 => Ok(true),
+            404 => Ok(false),
+            status => Err(map_status_error("GitHub", status)),
+        }
+    }
+
+    async fn create_tag(
+        &self,
+        repo: &RemoteRepository,
+        branch: &str,
+        tag_name: &str,
+        tag_type: RemoteTagType,
+        message: Option<&str>,
+    ) -> Result<CreatedRemoteTag> {
+        let head = self.get_branch_head(repo, branch).await?;
+        if self.tag_exists(repo, tag_name).await? {
+            return Err(GitViewError::TagAlreadyExists(tag_name.to_string()));
+        }
+        let base = self.api_base_url.trim_end_matches('/');
+        let target = match tag_type {
+            RemoteTagType::Lightweight => head.sha.clone(),
+            RemoteTagType::Annotated => {
+                let body = serde_json::json!({ "tag": tag_name, "message": message.unwrap_or_default(), "object": head.sha, "type": "commit" });
+                let resp = self
+                    .client
+                    .post(format!(
+                        "{base}/repos/{}/{}/git/tags",
+                        repo.owner, repo.name
+                    ))
+                    .bearer_auth(&self.token)
+                    .header(header::ACCEPT, "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2022-11-28")
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error("GitHub", &e))?;
+                let status = resp.status();
+                if !status.is_success() {
+                    return Err(map_tag_status_error("GitHub", status.as_u16(), tag_name));
+                }
+                let tag: GitHubTagObjectResp = resp.json().await.map_err(|e| {
+                    GitViewError::ResponseDecode(format!(
+                        "解析 GitHub Tag 响应失败：{}",
+                        redact_token(&e.to_string())
+                    ))
+                })?;
+                tag.sha
+            }
+        };
+        let body = serde_json::json!({ "ref": format!("refs/tags/{tag_name}"), "sha": target });
+        let resp = self
+            .client
+            .post(format!(
+                "{base}/repos/{}/{}/git/refs",
+                repo.owner, repo.name
+            ))
+            .bearer_auth(&self.token)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| map_request_error("GitHub", &e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(map_tag_status_error("GitHub", status.as_u16(), tag_name));
+        }
+        Ok(CreatedRemoteTag {
+            name: tag_name.to_string(),
+            target_sha: head.sha,
+        })
+    }
+}
+
+/// 创建 Tag 的冲突/限流需要比通用 HTTP 状态更精确，供批量结果逐项目展示。
+fn map_tag_status_error(platform: &str, status: u16, tag_name: &str) -> GitViewError {
+    match status {
+        409 | 422 => GitViewError::TagAlreadyExists(tag_name.to_string()),
+        429 => GitViewError::RateLimited(platform.to_string()),
+        _ => map_status_error(platform, status),
     }
 }
 

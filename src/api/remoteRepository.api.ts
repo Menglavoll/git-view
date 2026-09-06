@@ -3,9 +3,18 @@
 // 封装与 src-tauri/src/commands/remote_repositories.rs 对应的 5 个 IPC 命令。
 // =====================================================================
 
-import { invokeCmd } from './tauri';
+import { invokeCmd, listenEvent } from './tauri';
+import type { UnlistenFn } from '@tauri-apps/api/event';
 import type { CommitDetail, CommitPage } from '@/types/git';
 import type { RemoteRepository } from '@/types/repository';
+import type {
+  BatchTagPrecheckResult,
+  BatchTagRequest,
+  BatchTagFinishedPayload,
+  BatchTagProgressPayload,
+  BatchTagStartResult,
+  BranchHead,
+} from '@/types/tag';
 
 /** 远程仓库筛选条件。 */
 export interface RemoteRepoFilter {
@@ -60,5 +69,36 @@ export const remoteRepositoryApi = {
   /** 拉取远程仓库的分支列表（从平台 API，供克隆时选择分支）。 */
   listBranches(repoId: string): Promise<string[]> {
     return invokeCmd<string[]>('list_remote_branches', { repoId });
+  },
+
+  /** 读取远程分支最新提交，供批量 Tag 配置页展示 SHA 与提交说明。 */
+  getBranchHead(repoId: string, branch: string): Promise<BranchHead> {
+    return invokeCmd<BranchHead>('get_remote_branch_head', { repoId, branch });
+  },
+
+  /** 只读校验批量 Tag 配置；失败项目必须修正或移除后才能确认创建。 */
+  precheckBatchTags(payload: BatchTagRequest): Promise<BatchTagPrecheckResult[]> {
+    return invokeCmd<BatchTagPrecheckResult[]>('precheck_batch_tags', { payload });
+  },
+
+  /** 启动后台远程创建；后端会重新检查分支 head 与同名 Tag。 */
+  startBatchTags(
+    payload: BatchTagRequest,
+    prechecks: BatchTagPrecheckResult[],
+  ): Promise<BatchTagStartResult> {
+    return invokeCmd<BatchTagStartResult>('start_batch_tags', { payload, prechecks });
+  },
+
+  /** 停止尚未开始的项目；已经发出的远程请求无法撤回。 */
+  cancelBatchTags(batchId: string): Promise<void> {
+    return invokeCmd<void>('cancel_batch_tags', { batchId });
+  },
+
+  onBatchTagProgress(handler: (payload: BatchTagProgressPayload) => void): Promise<UnlistenFn> {
+    return listenEvent('batch-tag-progress', handler);
+  },
+
+  onBatchTagFinished(handler: (payload: BatchTagFinishedPayload) => void): Promise<UnlistenFn> {
+    return listenEvent('batch-tag-finished', handler);
   },
 };

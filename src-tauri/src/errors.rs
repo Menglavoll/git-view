@@ -106,6 +106,26 @@ pub enum GitViewError {
     #[error("工作区存在未提交变更，请先提交或暂存后再执行")]
     DirtyWorkdir,
 
+    /// Tag 名称不符合 Git ref 规则，必须由用户修正后再创建。
+    #[error("Tag 名称不合法：{0}")]
+    TagNameInvalid(String),
+
+    /// 目标远程仓库已存在同名 Tag；本应用不提供覆盖写入。
+    #[error("Tag 已存在：{0}")]
+    TagAlreadyExists(String),
+
+    /// 用户选择的远程分支不存在或已被删除。
+    #[error("远程分支不存在：{0}")]
+    BranchNotFound(String),
+
+    /// 当前平台或实例不能创建附注 Tag，不能静默降级为轻量 Tag。
+    #[error("该平台不支持附注 Tag：{0}")]
+    AnnotatedTagUnsupported(String),
+
+    /// 平台返回限流，用户可以在稍后重试失败项目。
+    #[error("平台 API 请求过于频繁，请稍后重试：{0}")]
+    RateLimited(String),
+
     /// 内部错误（不应出现在生产路径上的兜底类型，定位 Bug 用）。
     #[error("内部错误：{0}")]
     Internal(String),

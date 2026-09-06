@@ -228,6 +228,8 @@ const OPERATION_TYPE_LABELS: Record<OperationType, string> = {
   commit: '提交',
   checkout: '切换分支',
   create_branch: '新建分支',
+  batch_create_tag: '批量创建 Tag',
+  create_tag: '创建 Tag',
   scan_repos: '扫描仓库',
   discard_changes: '丢弃变更',
 };
