@@ -27,3 +27,4 @@ pub mod provider;
 pub mod proxy;
 pub mod repository_service;
 pub mod settings_service;
+pub mod tag_service;

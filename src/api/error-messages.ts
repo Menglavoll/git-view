@@ -27,6 +27,11 @@ export type GitViewErrorCode =
   | 'UserCancelled'
   | 'BusyAccount'
   | 'DirtyWorkdir'
+  | 'TagNameInvalid'
+  | 'TagAlreadyExists'
+  | 'BranchNotFound'
+  | 'AnnotatedTagUnsupported'
+  | 'RateLimited'
   | 'Internal';
 
 /**
@@ -52,6 +57,11 @@ const ERROR_MESSAGES: Record<GitViewErrorCode, string> = {
   UserCancelled: '操作已取消',
   BusyAccount: '该账号正在同步中，请稍后再试',
   DirtyWorkdir: '工作区存在未提交变更，请先提交或暂存后再执行',
+  TagNameInvalid: 'Tag 名称不符合 Git ref 规则',
+  TagAlreadyExists: '目标项目中已存在同名 Tag，不会覆盖',
+  BranchNotFound: '目标远程分支不存在或已被删除',
+  AnnotatedTagUnsupported: '当前平台或实例不支持创建附注 Tag',
+  RateLimited: '平台 API 请求过于频繁，请稍后重试失败项目',
   Internal: '内部错误，请重试或查看日志获取详情',
 };
 

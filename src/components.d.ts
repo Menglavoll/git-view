@@ -12,6 +12,7 @@ declare module 'vue' {
     AccountFormDialog: typeof import('./components/account/AccountFormDialog.vue')['default']
     AccountSwitcher: typeof import('./components/account/AccountSwitcher.vue')['default']
     BatchCloneDialog: typeof import('./components/clone/BatchCloneDialog.vue')['default']
+    BatchCreateTagDialog: typeof import('./components/repository/BatchCreateTagDialog.vue')['default']
     BranchSelector: typeof import('./components/git/BranchSelector.vue')['default']
     CommitDetailPanel: typeof import('./components/git/CommitDetailPanel.vue')['default']
     CommitHistory: typeof import('./components/git/CommitHistory.vue')['default']

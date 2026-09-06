@@ -21,8 +21,8 @@ use crate::models::account::GitPlatform;
 use crate::models::git::{CommitDetail, CommitFile, CommitFileStatus, CommitStats, CommitSummary};
 use crate::models::repository::{CreateRepoRequest, RemoteRepository, Visibility};
 use crate::services::provider::{
-    parse_iso_datetime, truncate_file_diff, CommitPage, GitHostingProvider, RepositoryPage,
-    UserProfile,
+    parse_iso_datetime, truncate_file_diff, BranchHead, CommitPage, CreatedRemoteTag,
+    GitHostingProvider, RemoteTagType, RepositoryPage, UserProfile,
 };
 use crate::utils::redact::redact_token;
 
@@ -154,6 +154,20 @@ struct GitLabCommitResp {
 #[derive(Debug, Deserialize)]
 struct GitLabBranchResp {
     name: String,
+}
+
+/// GitLab 单分支响应包含 head commit，足以同时提供 SHA 与标题。
+#[derive(Debug, Deserialize)]
+struct GitLabBranchHeadResp {
+    name: String,
+    commit: GitLabBranchCommit,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitLabBranchCommit {
+    id: String,
+    title: Option<String>,
+    message: Option<String>,
 }
 
 /// GitLab 单提交 diff 端点的单文件项（无 per-file 增删数）。
@@ -483,6 +497,114 @@ impl GitHostingProvider for GitLabProvider {
         }
 
         Ok(branches)
+    }
+
+    async fn get_branch_head(&self, repo: &RemoteRepository, branch: &str) -> Result<BranchHead> {
+        let encoded: String = url::form_urlencoded::byte_serialize(branch.as_bytes()).collect();
+        let url = format!(
+            "{}/projects/{}/repository/branches/{}",
+            self.api_base_url.trim_end_matches('/'),
+            repo.remote_id,
+            encoded
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .send()
+            .await
+            .map_err(|e| map_request_error("GitLab", &e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return if status.as_u16() == 404 {
+                Err(GitViewError::BranchNotFound(branch.to_string()))
+            } else {
+                Err(map_status_error("GitLab", status.as_u16()))
+            };
+        }
+        let item: GitLabBranchHeadResp = resp.json().await.map_err(|e| {
+            GitViewError::ResponseDecode(format!(
+                "解析 GitLab 分支响应失败：{}",
+                redact_token(&e.to_string())
+            ))
+        })?;
+        let subject = item
+            .commit
+            .title
+            .or(item.commit.message)
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        Ok(BranchHead {
+            branch: item.name,
+            short_sha: item.commit.id.chars().take(8).collect(),
+            sha: item.commit.id,
+            subject,
+        })
+    }
+
+    async fn tag_exists(&self, repo: &RemoteRepository, tag_name: &str) -> Result<bool> {
+        let encoded: String = url::form_urlencoded::byte_serialize(tag_name.as_bytes()).collect();
+        let url = format!(
+            "{}/projects/{}/repository/tags/{}",
+            self.api_base_url.trim_end_matches('/'),
+            repo.remote_id,
+            encoded
+        );
+        let resp = self
+            .client
+            .get(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .send()
+            .await
+            .map_err(|e| map_request_error("GitLab", &e))?;
+        match resp.status().as_u16() {
+            200 => Ok(true),
+            404 => Ok(false),
+            status => Err(map_status_error("GitLab", status)),
+        }
+    }
+
+    async fn create_tag(
+        &self,
+        repo: &RemoteRepository,
+        branch: &str,
+        tag_name: &str,
+        tag_type: RemoteTagType,
+        message: Option<&str>,
+    ) -> Result<CreatedRemoteTag> {
+        let head = self.get_branch_head(repo, branch).await?;
+        if self.tag_exists(repo, tag_name).await? {
+            return Err(GitViewError::TagAlreadyExists(tag_name.to_string()));
+        }
+        let url = format!(
+            "{}/projects/{}/repository/tags",
+            self.api_base_url.trim_end_matches('/'),
+            repo.remote_id
+        );
+        let mut query = vec![("tag_name", tag_name), ("ref", branch)];
+        if matches!(tag_type, RemoteTagType::Annotated) {
+            query.push(("message", message.unwrap_or_default()));
+        }
+        let resp = self
+            .client
+            .post(&url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .query(&query)
+            .send()
+            .await
+            .map_err(|e| map_request_error("GitLab", &e))?;
+        match resp.status().as_u16() {
+            200 | 201 => Ok(CreatedRemoteTag {
+                name: tag_name.to_string(),
+                target_sha: head.sha,
+            }),
+            400 | 405 | 409 => Err(GitViewError::TagAlreadyExists(tag_name.to_string())),
+            429 => Err(GitViewError::RateLimited("GitLab".to_string())),
+            status => Err(map_status_error("GitLab", status)),
+        }
     }
 }
 

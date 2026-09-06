@@ -6,6 +6,12 @@
 import { invokeCmd } from './tauri';
 import type { CommitDetail, CommitPage } from '@/types/git';
 import type { RemoteRepository } from '@/types/repository';
+import type {
+  BatchTagPrecheckResult,
+  BatchTagRequest,
+  BatchTagResult,
+  BranchHead,
+} from '@/types/tag';
 
 /** 远程仓库筛选条件。 */
 export interface RemoteRepoFilter {
@@ -60,5 +66,23 @@ export const remoteRepositoryApi = {
   /** 拉取远程仓库的分支列表（从平台 API，供克隆时选择分支）。 */
   listBranches(repoId: string): Promise<string[]> {
     return invokeCmd<string[]>('list_remote_branches', { repoId });
+  },
+
+  /** 读取远程分支最新提交，供批量 Tag 配置页展示 SHA 与提交说明。 */
+  getBranchHead(repoId: string, branch: string): Promise<BranchHead> {
+    return invokeCmd<BranchHead>('get_remote_branch_head', { repoId, branch });
+  },
+
+  /** 只读校验批量 Tag 配置；失败项目必须修正或移除后才能确认创建。 */
+  precheckBatchTags(payload: BatchTagRequest): Promise<BatchTagPrecheckResult[]> {
+    return invokeCmd<BatchTagPrecheckResult[]>('precheck_batch_tags', { payload });
+  },
+
+  /** 确认窗口后的实际远程创建；后端会重新检查分支 head 与同名 Tag。 */
+  createBatchTags(
+    payload: BatchTagRequest,
+    prechecks: BatchTagPrecheckResult[],
+  ): Promise<BatchTagResult> {
+    return invokeCmd<BatchTagResult>('create_batch_tags', { payload, prechecks });
   },
 };

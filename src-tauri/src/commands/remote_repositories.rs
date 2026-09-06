@@ -8,8 +8,9 @@ use crate::errors::Result;
 use crate::models::git::CommitDetail;
 use crate::models::repository::RemoteRepository;
 use crate::services::account_service;
-use crate::services::provider::CommitPage;
+use crate::services::provider::{BranchHead, CommitPage};
 use crate::services::repository_service::{self, RemoteRepoFilter};
+use crate::services::tag_service::{self, BatchTagPrecheckResult, BatchTagRequest, BatchTagResult};
 use crate::AppState;
 
 /// 查询远程仓库列表（支持多条件筛选）。
@@ -124,4 +125,35 @@ pub async fn list_remote_branches(
     let repo = repository_service::get_remote_repository(&state.db, &repo_id)?;
     let provider = account_service::provider_for_account(&state.db, &repo.account_id)?;
     provider.list_branches(&repo).await
+}
+
+/// 读取指定远程分支的最新提交，供批量 Tag 配置和确认摘要核对。
+#[tauri::command]
+pub async fn get_remote_branch_head(
+    state: State<'_, AppState>,
+    repo_id: String,
+    branch: String,
+) -> Result<BranchHead> {
+    let repo = repository_service::get_remote_repository(&state.db, &repo_id)?;
+    let provider = account_service::provider_for_account(&state.db, &repo.account_id)?;
+    provider.get_branch_head(&repo, &branch).await
+}
+
+/// 批量 Tag 的只读预检查；不写远程仓库，也不记录写操作日志。
+#[tauri::command]
+pub async fn precheck_batch_tags(
+    state: State<'_, AppState>,
+    payload: BatchTagRequest,
+) -> Result<Vec<BatchTagPrecheckResult>> {
+    tag_service::precheck_batch_tags(&state.db, &payload).await
+}
+
+/// 确认后的批量 Tag 创建。服务层以有限并发执行且每个项目独立返回结果。
+#[tauri::command]
+pub async fn create_batch_tags(
+    state: State<'_, AppState>,
+    payload: BatchTagRequest,
+    prechecks: Vec<BatchTagPrecheckResult>,
+) -> Result<BatchTagResult> {
+    tag_service::create_batch_tags(&state.db, &payload, &prechecks).await
 }

@@ -22,8 +22,8 @@ use crate::models::account::GitPlatform;
 use crate::models::git::{CommitDetail, CommitFile, CommitFileStatus, CommitStats, CommitSummary};
 use crate::models::repository::{CreateRepoRequest, RemoteRepository, Visibility};
 use crate::services::provider::{
-    parse_iso_datetime, truncate_file_diff, CommitPage, GitHostingProvider, RepositoryPage,
-    UserProfile,
+    parse_iso_datetime, truncate_file_diff, BranchHead, CommitPage, CreatedRemoteTag,
+    GitHostingProvider, RemoteTagType, RepositoryPage, UserProfile,
 };
 use crate::utils::redact::redact_token;
 
@@ -129,6 +129,20 @@ struct GiteeOwner {
 #[derive(Debug, Deserialize)]
 struct GiteeBranchResp {
     name: String,
+    #[serde(default)]
+    commit: Option<GiteeBranchCommit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GiteeBranchCommit {
+    sha: String,
+    #[serde(default)]
+    commit: Option<GiteeBranchCommitMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GiteeBranchCommitMeta {
+    message: Option<String>,
 }
 
 /// Gitee 提交列表项字段子集（API 形态对齐 GitHub）。
@@ -526,6 +540,147 @@ impl GitHostingProvider for GiteeProvider {
         }
 
         Ok(branches)
+    }
+
+    async fn get_branch_head(&self, repo: &RemoteRepository, branch: &str) -> Result<BranchHead> {
+        let encoded: String = url::form_urlencoded::byte_serialize(branch.as_bytes()).collect();
+        let base = format!(
+            "{}/repos/{}/{}/branches/{}",
+            self.api_base_url.trim_end_matches('/'),
+            repo.owner,
+            repo.name,
+            encoded
+        );
+        let req = match self.auth_mode {
+            GiteeAuthMode::Header => self
+                .client
+                .get(&base)
+                .header("Authorization", format!("token {}", self.token)),
+            GiteeAuthMode::Query => self
+                .client
+                .get(&base)
+                .query(&[("access_token", &self.token)]),
+        };
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_request_error("Gitee", &e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return if status.as_u16() == 404 {
+                Err(GitViewError::BranchNotFound(branch.to_string()))
+            } else {
+                Err(map_status_error("Gitee", status.as_u16()))
+            };
+        }
+        let item: GiteeBranchResp = resp.json().await.map_err(|e| {
+            GitViewError::ResponseDecode(format!(
+                "解析 Gitee 分支响应失败：{}",
+                redact_token(&e.to_string())
+            ))
+        })?;
+        let commit = item.commit.ok_or_else(|| {
+            GitViewError::ResponseDecode("Gitee 分支响应缺少提交信息".to_string())
+        })?;
+        let subject = commit
+            .commit
+            .and_then(|c| c.message)
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        Ok(BranchHead {
+            branch: item.name,
+            short_sha: commit.sha.chars().take(7).collect(),
+            sha: commit.sha,
+            subject,
+        })
+    }
+
+    async fn tag_exists(&self, repo: &RemoteRepository, tag_name: &str) -> Result<bool> {
+        let encoded: String = url::form_urlencoded::byte_serialize(tag_name.as_bytes()).collect();
+        let base = format!(
+            "{}/repos/{}/{}/tags/{}",
+            self.api_base_url.trim_end_matches('/'),
+            repo.owner,
+            repo.name,
+            encoded
+        );
+        let req = match self.auth_mode {
+            GiteeAuthMode::Header => self
+                .client
+                .get(&base)
+                .header("Authorization", format!("token {}", self.token)),
+            GiteeAuthMode::Query => self
+                .client
+                .get(&base)
+                .query(&[("access_token", &self.token)]),
+        };
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_request_error("Gitee", &e))?;
+        match resp.status().as_u16() {
+            200 => Ok(true),
+            404 => Ok(false),
+            status => Err(map_status_error("Gitee", status)),
+        }
+    }
+
+    fn supports_tag_type(&self, tag_type: RemoteTagType) -> bool {
+        matches!(tag_type, RemoteTagType::Lightweight)
+    }
+
+    async fn create_tag(
+        &self,
+        repo: &RemoteRepository,
+        branch: &str,
+        tag_name: &str,
+        tag_type: RemoteTagType,
+        _message: Option<&str>,
+    ) -> Result<CreatedRemoteTag> {
+        if matches!(tag_type, RemoteTagType::Annotated) {
+            return Err(GitViewError::AnnotatedTagUnsupported(
+                "Gitee 当前 API".to_string(),
+            ));
+        }
+        let head = self.get_branch_head(repo, branch).await?;
+        if self.tag_exists(repo, tag_name).await? {
+            return Err(GitViewError::TagAlreadyExists(tag_name.to_string()));
+        }
+        let base = format!(
+            "{}/repos/{}/{}/tags",
+            self.api_base_url.trim_end_matches('/'),
+            repo.owner,
+            repo.name
+        );
+        let params = [("tag_name", tag_name), ("refs", branch)];
+        let req = match self.auth_mode {
+            GiteeAuthMode::Header => self
+                .client
+                .post(&base)
+                .header("Authorization", format!("token {}", self.token))
+                .form(&params),
+            GiteeAuthMode::Query => self
+                .client
+                .post(&base)
+                .query(&[("access_token", &self.token)])
+                .form(&params),
+        };
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_request_error("Gitee", &e))?;
+        match resp.status().as_u16() {
+            200 | 201 => Ok(CreatedRemoteTag {
+                name: tag_name.to_string(),
+                target_sha: head.sha,
+            }),
+            400 | 409 | 422 => Err(GitViewError::TagAlreadyExists(tag_name.to_string())),
+            429 => Err(GitViewError::RateLimited("Gitee".to_string())),
+            status => Err(map_status_error("Gitee", status)),
+        }
     }
 }
 
