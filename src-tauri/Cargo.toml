@@ -8,7 +8,7 @@
 
 [package]
 name = "gitview"
-version = "1.0.0"
+version = "1.0.1"
 description = "GitView — 轻量级跨平台 Git 可视化客户端"
 authors = ["GitView Team"]
 edition = "2021"
